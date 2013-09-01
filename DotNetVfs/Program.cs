@@ -1,5 +1,4 @@
-﻿using Community.CsharpSqlite;
-using DotNetVfs.Sqlite;
+﻿using DotNetVfs.Sqlite;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -111,44 +110,236 @@ namespace DotNetVfs
 
 	unsafe class Program
 	{
-		static void Test()
+		public enum FileEntryType : int
 		{
-			using (var Client = new SqliteClient("test.db"))
-			{
-				//Client.Exec("DROP TABLE file_reference;");
-				Client.Exec("CREATE TABLE IF NOT EXISTS file_reference (md5, size);");
-				Client.Exec("CREATE TABLE IF NOT EXISTS file_history (path, reference, );");
-				Client.Insert("file_reference", new Dictionary<string, object>()
-				{
-					{ "md5", "mymd5" },
-					{ "size", 10000 },
-				});
+			Folder = 0,
+			File = 1,
+		}
 
-				foreach (var Row in Client.Query("SELECT md5, size FROM file_reference;"))
+		[SqliteUnique("md5")]
+		public class FileReference
+		{
+			public string md5;
+			public long size;
+		}
+
+		[SqliteUnique("directory", "name")]
+		public class FileEntry
+		{
+			public string directory;
+			public string name;
+			public FileEntryType type;
+			public long reference;
+			public long ctime;
+		}
+
+		class EntryPath
+		{
+			public readonly string Directory;
+			public readonly string BaseName;
+
+			public EntryPath(string Directory, string BaseName)
+			{
+				this.Directory = Directory;
+				this.BaseName = BaseName;
+			}
+
+			public EntryPath(string FullPath)
+			{
+				var Index = FullPath.LastIndexOf("/");
+				if (Index < 0)
 				{
-					Console.WriteLine("Row: {0}, {1}", Row[0], Row[1]);
+					Directory = "";
+					BaseName = FullPath;
+				}
+				else
+				{
+					Directory = FullPath.Substring(0, Index);
+					BaseName = FullPath.Substring(Index + 1);
 				}
 			}
 
-			Console.ReadKey();
-			Environment.Exit(0);
+			public string FullPath { get {
+				if (String.IsNullOrEmpty(Directory)) return BaseName;
+				return Directory + "/" + BaseName;
+			} }
 		}
+
+		class Tree
+		{
+			SqliteClient Client;
+			SqliteTable<FileEntry> FileEntryTable;
+			SqliteTable<FileReference> FileReferenceTable;
+
+			public Tree(SqliteClient Client)
+			{
+				this.Client = Client;
+				this.FileEntryTable = Client.Table<FileEntry>("FileEntry");
+				this.FileReferenceTable = Client.Table<FileReference>("FileReference");
+			}
+
+			public IEnumerable<FileEntry> GetFilesInFolder(EntryPath Path)
+			{
+				Console.WriteLine("GetFilesInFolder: '{0}'", Path.FullPath);
+				foreach (var File in FileEntryTable.Select("directory=?", Path.FullPath))
+				{
+					Console.WriteLine("  : '{0}'", File.name);
+					yield return File;
+				}
+			}
+
+			public FileEntry GetFileInFolder(EntryPath Path)
+			{
+				foreach (var File in FileEntryTable.Select("directory=? AND name=?", Path.Directory, Path.BaseName))
+				{
+					return File;
+				}
+				throw (new Exception("Can't find file '" + Path.Directory + '/' + Path.BaseName + "'"));
+			}
+
+			private void _CreateFolder(string directory, string name)
+			{
+				Console.WriteLine("_CreateFolder: '{0}', '{1}'", directory, name);
+				FileEntryTable.Insert(new FileEntry()
+				{
+					directory = directory,
+					name = name,
+					type = FileEntryType.Folder,
+					reference = 0,
+				});
+
+			}
+
+			public void CreateFolder(EntryPath Path)
+			{
+				_CreateFolder(Path.Directory, Path.BaseName);
+				_CreateFolder(Path.FullPath, null);
+			}
+
+			public void AddFile(EntryPath Path)
+			{
+				AddFile(new FileEntry()
+				{
+					directory = Path.Directory,
+					name = Path.BaseName,
+					type = FileEntryType.File,
+					reference = 0,
+				});
+			}
+
+			public void AddFile(FileEntry FileEntry)
+			{
+				FileEntryTable.Insert(FileEntry);
+			}
+		}
+
+		class TreeFileSystem
+		{
+			Tree Tree;
+
+			public TreeFileSystem(Tree Tree)
+			{
+				this.Tree = Tree;
+			}
+
+			public Result readdir(string path, IntPtr buf, fuse_fill_dir_t filler, ulong offset, ref fuse_file_info fi)
+			{
+				int Count = 0;
+
+				foreach (var Entry in Tree.GetFilesInFolder(new EntryPath(path)))
+				{
+					if (Entry.name == null)
+					{
+						filler(buf, ".", null, 0);
+						filler(buf, "..", null, 0);
+					}
+					else
+					{
+						filler(buf, Entry.name, null, 0);
+					}
+
+					Count++;
+				}
+
+				return (Count == 0) ? Result.ENOENT : Result.OK;
+			}
+
+			public Result getattr(string path, out stat stbuf)
+			{
+				stbuf = default(stat);
+
+				try
+				{
+					var Entry = Tree.GetFileInFolder(new EntryPath(path));
+
+					switch (Entry.type)
+					{
+						case FileEntryType.Folder:
+							stbuf.st_mode = (uint)Mode.S_IFDIR | 0755;
+							stbuf.st_nlink = (IntPtr)2;
+							break;
+						case FileEntryType.File:
+							stbuf.st_mode = (uint)Mode.S_IFREG | 0444;
+							stbuf.st_nlink = (IntPtr)1;
+							stbuf.st_size = 100;
+							break;
+					}
+
+					return Result.OK;
+				}
+				catch (Exception)
+				{
+					return Result.ENOENT;
+				}
+			}
+
+			public int mkdir(string path, uint mode)
+			{
+				Tree.CreateFolder(new EntryPath(path));
+				return 0;
+			}
+		}
+
+		//static void Test()
+		//{
+		//	using (var Client = new SqliteClient("test.db"))
+		//	{
+		//		var Tree = new Tree(Client);
+		//		Tree.CreateFolder(new EntryPath("test"));
+		//		Tree.AddFile(new EntryPath("test", "demo"));
+		//		foreach (var file in Tree.GetFilesInFolder("test"))
+		//		{
+		//			Console.WriteLine(file.directory + "/" + file.name + " : " + file.type);
+		//		}
+		//	}
+		//
+		//	Console.ReadKey();
+		//	Environment.Exit(0);
+		//}
 
 		static void Main(string[] args)
 		{
-			Test();
+			//var FileSystem = new TreeFileSystem(new Tree(new SqliteClient("test.db")));
+			var FileSystem = new TreeFileSystem(new Tree(new SqliteClient(":memory:")));
 
-			//File.WriteAllText("log.txt", "LOL!");
-			var HelloWorld = new HelloWorld();
-			fuse_operations hello_oper = new fuse_operations()
+			FileSystem.mkdir("/1", 0777);
+			var stat = default(stat);
+			var fuse_file_info = default(fuse_file_info);
+			FileSystem.getattr("/", out stat);
+			FileSystem.readdir("/", IntPtr.Zero, (buf, name, stbuf, off) =>
 			{
-				getattr = Marshal.GetFunctionPointerForDelegate((Delegate)(Delegates.getattr)HelloWorld.getattr),
-				readdir = Marshal.GetFunctionPointerForDelegate((Delegate)(Delegates.readdir)HelloWorld.readdir),
-				open = Marshal.GetFunctionPointerForDelegate((Delegate)(Delegates.open)HelloWorld.open),
-				read = Marshal.GetFunctionPointerForDelegate((Delegate)(Delegates.read)HelloWorld.read),
-			};
+				Console.WriteLine("{0}", name);
+				return 0;
+			}, 0, ref fuse_file_info);
 
-			Fuse.main(ref hello_oper);
+			Fuse.main(new FuseOperations()
+			{
+				mkdir = FileSystem.mkdir,
+				getattr = FileSystem.getattr,
+				readdir = FileSystem.readdir,
+				//open = FileSystem.open,
+				//read = FileSystem.read,
+			});
 		}
 	}
 }

@@ -289,7 +289,7 @@ namespace DotNetVfs
 		//public delegate int readlink(string path, string link, size_t);
 		//public delegate int getdir(string path, fuse_dirh_t, fuse_dirfil_t);
 		//public delegate int mknod(string path, mode_t, dev_t);
-		//public delegate int mkdir(string path, mode_t);
+		public delegate int mkdir(string path, mode_t mode);
 		//public delegate int unlink(string path);
 		//public delegate int rmdir(string path);
 		//public delegate int symlink(string path, string Name);
@@ -335,8 +335,9 @@ namespace DotNetVfs
 		[DllImport(LIB, CallingConvention = CallingConvention.Cdecl)]
 		static private extern int fuse_main_real(int argc, IntPtr argv, ref fuse_operations op, size_t op_size, IntPtr user_data);
 
-		static public void main(ref fuse_operations op)
+		static public void main(FuseOperations FuseOperations)
 		{
+			var op = FuseOperations.Convert();
 			var args = Environment.GetCommandLineArgs();
 			//Console.WriteLine(args.Length);
 			//Console.WriteLine(String.Join("\n", args));
@@ -422,6 +423,69 @@ namespace DotNetVfs
 		public OperationsFlags flag;
 		public IntPtr ioctl;
 		public IntPtr poll;
+	}
+
+	public class FuseOperations
+	{
+		public Delegates.getattr getattr;
+		//public Delegates.readlink readlink;
+		//public Delegates.getdir getdir;
+		//public Delegates.mknod mknod;
+		public Delegates.mkdir mkdir;
+		//public Delegates.unlink unlink;
+		//public Delegates.rmdir rmdir;
+		//public Delegates.symlink symlink;
+		//public Delegates.rename rename;
+		//public Delegates.link link;
+		//public Delegates.chmod chmod;
+		//public Delegates.chown chown;
+		//public Delegates.truncate truncate;
+		//public Delegates.utime utime;
+		public Delegates.open open;
+		public Delegates.read read;
+		//public Delegates.write write;
+		//public Delegates.statfs statfs;
+		//public Delegates.flush flush;
+		//public Delegates.release release;
+		//public Delegates.fsync fsync;
+		//public Delegates.setxattr setxattr;
+		//public Delegates.getxattr getxattr;
+		//public Delegates.listxattr listxattr;
+		//public Delegates.removexattr removexattr;
+		public Delegates.opendir opendir;
+		public Delegates.readdir readdir;
+		//public Delegates.releasedir releasedir;
+		//public Delegates.fsyncdir fsyncdir;
+		//public Delegates.init init;
+		//public Delegates.destroy destroy;
+		//public Delegates.access access;
+		//public Delegates.create create;
+		//public Delegates.ftruncate ftruncate;
+		//public Delegates.fgetattr fgetattr;
+		//public Delegates.@lock @lock;
+		//public Delegates.utimens utimens;
+		//public Delegates.bmap bmap;
+		//public Delegates.flag flag;
+		//public Delegates.ioctl ioctl;
+		//public Delegates.poll poll;
+
+		static private IntPtr ConvertFunction<TType>(TType Func)
+		{
+			if (Func == null) return IntPtr.Zero;
+			return Marshal.GetFunctionPointerForDelegate((Delegate)(object)(TType)(object)Func);
+		}
+
+		public fuse_operations Convert()
+		{
+			return new fuse_operations()
+			{
+				mkdir = ConvertFunction(mkdir),
+				getattr = ConvertFunction(getattr),
+				readdir = ConvertFunction(readdir),
+				open = ConvertFunction(open),
+				read = ConvertFunction(read),
+			};
+		}
 	}
 
 }
