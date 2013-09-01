@@ -128,6 +128,7 @@ namespace DotNetVfs
 		{
 			public string directory;
 			public string name;
+			public long mode;
 			public FileEntryType type;
 			public long reference;
 			public long ctime;
@@ -140,7 +141,7 @@ namespace DotNetVfs
 
 			public EntryPath(string Directory, string BaseName)
 			{
-				this.Directory = Directory;
+				this.Directory = "/" + Directory.TrimStart('/');
 				this.BaseName = BaseName;
 			}
 
@@ -149,19 +150,19 @@ namespace DotNetVfs
 				var Index = FullPath.LastIndexOf("/");
 				if (Index < 0)
 				{
-					Directory = "";
+					Directory = "/";
 					BaseName = FullPath;
 				}
 				else
 				{
-					Directory = FullPath.Substring(0, Index);
+					Directory = "/" + FullPath.Substring(0, Index).TrimStart('/');
 					BaseName = FullPath.Substring(Index + 1);
 				}
 			}
 
 			public string FullPath { get {
-				if (String.IsNullOrEmpty(Directory)) return BaseName;
-				return Directory + "/" + BaseName;
+				if (String.IsNullOrEmpty(Directory)) return "/" + BaseName;
+				return "/" + (Directory + "/" + BaseName).TrimStart('/');
 			} }
 		}
 
@@ -180,10 +181,8 @@ namespace DotNetVfs
 
 			public IEnumerable<FileEntry> GetFilesInFolder(EntryPath Path)
 			{
-				Console.WriteLine("GetFilesInFolder: '{0}'", Path.FullPath);
 				foreach (var File in FileEntryTable.Select("directory=?", Path.FullPath))
 				{
-					Console.WriteLine("  : '{0}'", File.name);
 					yield return File;
 				}
 			}
@@ -197,23 +196,40 @@ namespace DotNetVfs
 				throw (new Exception("Can't find file '" + Path.Directory + '/' + Path.BaseName + "'"));
 			}
 
-			private void _CreateFolder(string directory, string name)
+			public static DateTime UnixTimeStampToDateTime(long unixTimeStamp)
+			{
+				// Unix timestamp is seconds past epoch
+				System.DateTime dtDateTime = new DateTime(1970, 1, 1, 0, 0, 0, 0);
+				dtDateTime = dtDateTime.AddSeconds(unixTimeStamp).ToLocalTime();
+				return dtDateTime;
+			}
+
+			public static long DateTimeToUnixTimestamp(DateTime dateTime)
+			{
+				return (long)((dateTime - new DateTime(1970, 1, 1).ToLocalTime()).TotalSeconds);
+			}
+
+
+			private void _CreateFolder(string directory, string name, uint mode)
 			{
 				Console.WriteLine("_CreateFolder: '{0}', '{1}'", directory, name);
 				FileEntryTable.Insert(new FileEntry()
 				{
 					directory = directory,
 					name = name,
+					mode = (long)mode,
 					type = FileEntryType.Folder,
 					reference = 0,
+					ctime = DateTimeToUnixTimestamp(DateTime.UtcNow),
 				});
 
 			}
 
-			public void CreateFolder(EntryPath Path)
+			public void CreateFolder(EntryPath Path, uint mode)
 			{
-				_CreateFolder(Path.Directory, Path.BaseName);
-				_CreateFolder(Path.FullPath, null);
+				Console.WriteLine("CreateFolder: '{0}'", Path.FullPath);
+				_CreateFolder(Path.Directory, Path.BaseName, mode);
+				_CreateFolder(Path.FullPath, null, mode);
 			}
 
 			public void AddFile(EntryPath Path)
@@ -236,14 +252,18 @@ namespace DotNetVfs
 		class TreeFileSystem
 		{
 			Tree Tree;
+			TextWriter Logger;
 
 			public TreeFileSystem(Tree Tree)
 			{
+				this.Logger = new StreamWriter(File.Open("./log.txt", FileMode.Create, FileAccess.Write, FileShare.ReadWrite));
+				(this.Logger as StreamWriter).AutoFlush = true;
 				this.Tree = Tree;
 			}
 
 			public Result readdir(string path, IntPtr buf, fuse_fill_dir_t filler, ulong offset, ref fuse_file_info fi)
 			{
+				Logger.WriteLine("readdir: '{0}'", path);
 				int Count = 0;
 
 				foreach (var Entry in Tree.GetFilesInFolder(new EntryPath(path)))
@@ -251,7 +271,7 @@ namespace DotNetVfs
 					if (Entry.name == null)
 					{
 						filler(buf, ".", null, 0);
-						filler(buf, "..", null, 0);
+						//filler(buf, "..", null, 0);
 					}
 					else
 					{
@@ -266,11 +286,14 @@ namespace DotNetVfs
 
 			public Result getattr(string path, out stat stbuf)
 			{
+				Logger.WriteLine("getattr: '{0}'", path);
 				stbuf = default(stat);
 
 				try
 				{
 					var Entry = Tree.GetFileInFolder(new EntryPath(path));
+					stbuf.st_ctime = new time_t() { tv_sec = (uint)Entry.ctime };
+					stbuf.st_mtime = new time_t() { tv_sec = (uint)Entry.ctime };
 
 					switch (Entry.type)
 					{
@@ -295,7 +318,8 @@ namespace DotNetVfs
 
 			public int mkdir(string path, uint mode)
 			{
-				Tree.CreateFolder(new EntryPath(path));
+				Logger.WriteLine("mkdir: '{0}'", path);
+				Tree.CreateFolder(new EntryPath(path), mode);
 				return 0;
 			}
 		}
@@ -319,16 +343,25 @@ namespace DotNetVfs
 
 		static void Main(string[] args)
 		{
-			//var FileSystem = new TreeFileSystem(new Tree(new SqliteClient("test.db")));
-			var FileSystem = new TreeFileSystem(new Tree(new SqliteClient(":memory:")));
+			var FileSystem = new TreeFileSystem(new Tree(new SqliteClient("test.db")));
+			//var FileSystem = new TreeFileSystem(new Tree(new SqliteClient(":memory:")));
 
+			//FileSystem.mkdir("/", 0777);
 			FileSystem.mkdir("/1", 0777);
+			FileSystem.mkdir("/1/2", 0777);
+			FileSystem.mkdir("/1/2", 0777);
 			var stat = default(stat);
 			var fuse_file_info = default(fuse_file_info);
 			FileSystem.getattr("/", out stat);
 			FileSystem.readdir("/", IntPtr.Zero, (buf, name, stbuf, off) =>
 			{
-				Console.WriteLine("{0}", name);
+				Console.WriteLine("'/': '{0}'", name);
+				return 0;
+			}, 0, ref fuse_file_info);
+
+			FileSystem.readdir("/1", IntPtr.Zero, (buf, name, stbuf, off) =>
+			{
+				Console.WriteLine("'/1': '{0}'", name);
 				return 0;
 			}, 0, ref fuse_file_info);
 

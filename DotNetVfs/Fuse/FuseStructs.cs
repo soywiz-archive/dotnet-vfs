@@ -358,8 +358,7 @@ namespace DotNetVfs
 
 			for (int i = 0; i < args.Length; ++i)
 			{
-				Marshal.WriteIntPtr(argv, i * IntPtr.Size,
-						Marshal.StringToHGlobalAuto(args[i]));
+				Marshal.WriteIntPtr(argv, i * IntPtr.Size, Marshal.StringToHGlobalAuto(args[i]));
 			}
 			Marshal.WriteIntPtr(argv, args.Length * IntPtr.Size, IntPtr.Zero);
 			return argv;

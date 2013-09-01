@@ -32,10 +32,11 @@ namespace DotNetVfs.Sqlite
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_finalize(IntPtr pStmt);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_reset(IntPtr pStmt);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern long sqlite3_last_insert_rowid(IntPtr db);
-		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern string sqlite3_errmsg(IntPtr db);
+		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern IntPtr sqlite3_errmsg(IntPtr db);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_column_count(IntPtr pStmt);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_step(IntPtr pStmt);
-		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_prepare(IntPtr db, string zSql, int nByte, out IntPtr ppStmt, char** pzTail);
+		//[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_prepare(IntPtr db, string zSql, int nByte, out IntPtr ppStmt, char** pzTail);
+		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_prepare_v2(IntPtr db, string zSql, int nByte, out IntPtr ppStmt, char** pzTail);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_bind_blob(IntPtr pStmt, int Column, byte[] Pointer, int n, IntPtr destructor);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_bind_double(IntPtr pStmt, int Column, double Value);
 		[DllImport(LIB, CallingConvention = LibCallingConvention)] static public extern int sqlite3_bind_int(IntPtr pStmt, int Column, int Value);
@@ -60,6 +61,7 @@ namespace DotNetVfs.Sqlite
 	{
 		public readonly SqliteClient Client;
 		public readonly string Name;
+		private Type Type = typeof(TType);
 		private ClassMap<TType> ClassMap;
 
 		internal SqliteTable(SqliteClient SqliteClient, string TableName)
@@ -68,7 +70,12 @@ namespace DotNetVfs.Sqlite
 			this.Client = SqliteClient;
 			this.Name = TableName;
 
-			Client.Exec("CREATE TABLE IF NOT EXISTS " + this.Name + " (" + String.Join(", ", ClassMap.GetFieldList()) + ");");
+			Client.Exec("CREATE TABLE IF NOT EXISTS '" + this.Name + "' (" + SqliteClient.EscapeList(ClassMap.GetFieldList()) + ");");
+			foreach (var Unique in Type.GetCustomAttributes(typeof(SqliteUniqueAttribute), true).Cast<SqliteUniqueAttribute>())
+			{
+				//Unique.Keys
+				Client.Exec("CREATE UNIQUE INDEX IF NOT EXISTS " + this.Name + "_unique_index ON '" + this.Name + "' (" + SqliteClient.EscapeList(Unique.Keys) + ");");
+			}
 		}
 
 		//[DebuggerHidden]
@@ -95,17 +102,21 @@ namespace DotNetVfs.Sqlite
 		{
 			if (Sqlite3.sqlite3_open(File, out db) == Sqlite3.SQLITE_ERROR)
 			{
-				throw (new SqlException(Sqlite3.sqlite3_errmsg(db) + " when connecting"));
+				throw (new SqlException(Marshal.PtrToStringAuto(Sqlite3.sqlite3_errmsg(db)) + " when connecting"));
 			}
+		}
+
+		static public string EscapeList(IEnumerable<string> Params)
+		{			
+			return String.Join(", ", Params.Select(Param => String.Format("'{0}'", Param)));
 		}
 
 		//[DebuggerHidden]
 		public void Exec(string SQL, params object[] Params)
 		{
-			foreach (var Row in Query(SQL, Params))
-			{
-				Console.WriteLine(Row);
-			}
+			Console.WriteLine("EXEC: {0}", SQL);
+			//_Query(SQL, false, Params);
+			_Query(SQL, true, Params);
 		}
 
 		public string Escape(string Text)
@@ -140,15 +151,20 @@ namespace DotNetVfs.Sqlite
 		private IntPtr _prepare(string SQL)
 		{
 			IntPtr stmt = default(IntPtr);
-			if (Sqlite3.sqlite3_prepare(db, SQL, SQL.Length, out stmt, null) != Sqlite3.SQLITE_OK)
+			if (Sqlite3.sqlite3_prepare_v2(db, SQL, SQL.Length, out stmt, null) != Sqlite3.SQLITE_OK)
 			{
-				throw (new SqlException(Sqlite3.sqlite3_errmsg(db) + " in query " + SQL));
+				throw (new SqlException("sqlite3_prepare_v2: " + Marshal.PtrToStringAuto(Sqlite3.sqlite3_errmsg(db)) + " in query " + SQL));
 			}
 			return stmt;
 		}
 
-		//[DebuggerHidden]
 		public IEnumerable<Dictionary<string, Object>> Query(string SQL, params object[] Params)
+		{
+			return _Query(SQL, true, Params);
+		}
+
+		//[DebuggerHidden]
+		public IEnumerable<Dictionary<string, Object>> _Query(string SQL, bool IterateRows, params object[] Params)
 		{
 			IntPtr stmt = _prepare(SQL);
 			for (int n = 0; n < Params.Length; n++)
@@ -175,7 +191,7 @@ namespace DotNetVfs.Sqlite
 					var ByteArray = (byte[])Params[n];
 					Sqlite3.sqlite3_bind_blob(stmt, Column, ByteArray, ByteArray.Length, Sqlite3.SQLITE_TRANSIENT);
 				}
-				else if (Type == typeof(int) || Type == typeof(long) || Type.IsEnum)
+				else if (Type.IsEnum || Type.IsPrimitive)
 				{
 					Sqlite3.sqlite3_bind_int64(stmt, Column, Convert.ToInt64(Param));
 				}
@@ -187,19 +203,23 @@ namespace DotNetVfs.Sqlite
 
 			try
 			{
-				if (Sqlite3.sqlite3_reset(stmt) != Sqlite3.SQLITE_OK)
+				if (IterateRows)
 				{
-					throw (new SqlException(Sqlite3.sqlite3_errmsg(db)));
-				}
-				int Result;
-				while ((Result = Sqlite3.sqlite3_step(stmt)) != Sqlite3.SQLITE_DONE)
-				{
-					if (Result != Sqlite3.SQLITE_ROW)
+					if (Sqlite3.sqlite3_reset(stmt) != Sqlite3.SQLITE_OK)
 					{
-						throw (new SqlException(Sqlite3.sqlite3_errmsg(db)));
+						throw (new SqlException("sqlite3_reset:" + Marshal.PtrToStringAuto(Sqlite3.sqlite3_errmsg(db)) + " for query " + SQL));
 					}
 
-					yield return _readRow(stmt);
+					int Result;
+					while ((Result = Sqlite3.sqlite3_step(stmt)) != Sqlite3.SQLITE_DONE)
+					{
+						if (Result != Sqlite3.SQLITE_ROW)
+						{
+							throw (new SqlException("sqlite3_step:" + Marshal.PtrToStringAuto(Sqlite3.sqlite3_errmsg(db)) + " for query " + SQL));
+						}
+
+						yield return _readRow(stmt);
+					}
 				}
 			}
 			finally
