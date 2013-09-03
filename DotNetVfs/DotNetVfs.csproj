@@ -48,6 +48,13 @@
     <Compile Include="Program.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="Sqlite\SqliteClient.cs" />
+    <Compile Include="Vfs\IVirtualFileHandle.cs" />
+    <Compile Include="Vfs\IVirtualFileSystemStats.cs" />
+    <Compile Include="Vfs\LocalFileSystem.cs" />
+    <Compile Include="Vfs\IVirtualFileStat.cs" />
+    <Compile Include="Vfs\IVirtualFileSystem.cs" />
+    <Compile Include="Vfs\VirtualFileMode.cs" />
+    <Compile Include="Vfs\VirtualFileUser.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
